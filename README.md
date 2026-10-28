@@ -2,7 +2,7 @@
 
 This project is configured for [Politics podcast](https://open.spotify.com/playlist/47qxeTou9y8CP9mlQOttIZ) and six shows: Left In The Attic, IHIP News, I've Had It, Seamossgirlies, Critical Babe Theory, and Hasan Minhaj Doesn't Know.
 
-Once Spotify is authorized, the workflow checks recent episodes and the playlist approximately every 30 minutes. It also checks all available episodes every six hours, so older episodes newly marked unplayed can be picked up. GitHub schedules can run late.
+Once Spotify is authorized, the workflow checks recent episodes and the playlist approximately every 15 minutes. It also checks all available episodes every six hours, so older episodes newly marked unplayed can be picked up. GitHub schedules can run late.
 
 The workflow adds missing episodes Spotify identifies as unfinished (unplayed or in progress) and removes episodes of these six shows that Spotify identifies as finished. Other shows, music, and episodes with unknown playback status are left alone. It reads the existing playlist before making changes and avoids adding known duplicates.
 
