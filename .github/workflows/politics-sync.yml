@@ -12,10 +12,10 @@ on:
         type: boolean
         default: true
   schedule:
-    # Check new releases and existing playlist items about every 30 minutes.
-    - cron: '17,47 * * * *'
-    # Reconcile all historical episodes every six hours.
-    - cron: '11 */6 * * *'
+    # Check every 15 minutes, at :07, :22, :37 and :52 each hour.
+    - cron: '7 0,6,12,18 * * *'
+    - cron: '7 1-5,7-11,13-17,19-23 * * *'
+    - cron: '22,37,52 * * * *'
 
 permissions:
   contents: read
@@ -45,14 +45,15 @@ jobs:
         run: |
           if [[ -z "$SPOTIFY_CLIENT_ID" || -z "$SPOTIFY_REFRESH_TOKEN" ]]; then
             echo 'Spotify is not connected. Add the two secrets described in README.md.'
-            exit 0
+            exit 1
           fi
           args=()
           if [[ "$EVENT_NAME" == 'workflow_dispatch' && "$DRY_RUN" == 'true' ]]; then
             args+=(--dry-run)
           fi
+          # The first scheduled run every six hours scans all historical episodes.
           if [[ "$EVENT_NAME" == 'workflow_dispatch' && "$FULL_SCAN" == 'true' ]] || \
-             [[ "$EVENT_SCHEDULE" == '11 */6 * * *' ]]; then
+             [[ "$EVENT_SCHEDULE" == '7 0,6,12,18 * * *' ]]; then
             args+=(--full)
           fi
           python politics_sync.py "${args[@]}"
