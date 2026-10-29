@@ -1,0 +1,62 @@
+name: Politics podcast sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview changes without editing Spotify
+        type: boolean
+        default: true
+      verify_only:
+        description: Read-only full audit; fail if any required episode is missing or duplicated
+        type: boolean
+        default: false
+  schedule:
+    - cron: '9,24,39,54 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: political-podcats-playlist-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test sync safeguards and ordering logic
+        run: python -m unittest -v
+      - name: Full catalog sync and saved-playlist verification
+        env:
+          SPOTIFY_CLIENT_ID: 08d9092293aa43f398d569b4aec930eb
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+        shell: bash
+        run: |
+          args=()
+          if [[ "$VERIFY_ONLY" == 'true' ]]; then
+            args+=(--verify-only)
+          elif [[ "$DRY_RUN" == 'true' ]]; then
+            args+=(--dry-run)
+          fi
+          python verified_sync.py "${args[@]}"
+      - name: Group politics shows alphabetically with newest episodes first
+        if: ${{ success() && inputs.dry_run != true && inputs.verify_only != true }}
+        env:
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+        run: python playlist_sort.py --profile politics
+      - name: Independent read-only audit
+        if: success() && inputs.dry_run != true && inputs.verify_only != true
+        env:
+          SPOTIFY_CLIENT_ID: 08d9092293aa43f398d569b4aec930eb
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+        run: python verified_sync.py --verify-only
