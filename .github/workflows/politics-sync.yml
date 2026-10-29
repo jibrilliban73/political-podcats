@@ -4,56 +4,56 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Preview without editing the playlist
+        description: Preview changes without editing Spotify
         type: boolean
         default: true
-      full_scan:
-        description: Check the entire back catalog
+      verify_only:
+        description: Read-only full audit; fail if any required episode is missing or duplicated
         type: boolean
-        default: true
+        default: false
   schedule:
-    # Check every 15 minutes, at :07, :22, :37 and :52 each hour.
-    - cron: '7 0,6,12,18 * * *'
-    - cron: '7 1-5,7-11,13-17,19-23 * * *'
-    - cron: '22,37,52 * * * *'
+    - cron: '9,24,39,54 * * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: politics-podcast-sync
+  group: political-podcats-playlist-sync
   cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Sync politics podcasts
+      - name: Test sync safeguards
+        run: python -m unittest -v
+      - name: Full catalog sync and saved-playlist verification
         env:
-          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_ID: 08d9092293aa43f398d569b4aec930eb
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
           DRY_RUN: ${{ inputs.dry_run }}
-          FULL_SCAN: ${{ inputs.full_scan }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         shell: bash
         run: |
-          if [[ -z "$SPOTIFY_CLIENT_ID" || -z "$SPOTIFY_REFRESH_TOKEN" ]]; then
-            echo 'Spotify is not connected. Add the two secrets described in README.md.'
-            exit 1
-          fi
           args=()
-          if [[ "$EVENT_NAME" == 'workflow_dispatch' && "$DRY_RUN" == 'true' ]]; then
+          if [[ "$VERIFY_ONLY" == 'true' ]]; then
+            args+=(--verify-only)
+          elif [[ "$DRY_RUN" == 'true' ]]; then
             args+=(--dry-run)
           fi
-          # The first scheduled run every six hours scans all historical episodes.
-          if [[ "$EVENT_NAME" == 'workflow_dispatch' && "$FULL_SCAN" == 'true' ]] || \
-             [[ "$EVENT_SCHEDULE" == '7 0,6,12,18 * * *' ]]; then
-            args+=(--full)
-          fi
-          python politics_sync.py "${args[@]}"
+          python verified_sync.py "${args[@]}"
+
+
+      - name: Independent read-only audit
+        if: success() && inputs.dry_run != true && inputs.verify_only != true
+        env:
+          SPOTIFY_CLIENT_ID: 08d9092293aa43f398d569b4aec930eb
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+        run: python verified_sync.py --verify-only
