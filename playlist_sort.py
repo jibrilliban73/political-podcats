@@ -202,7 +202,7 @@ class Spotify:
         raise SortError("Spotify pagination exceeded safety limit")
 
 
-def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES):
+def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=None):
     path = f"/playlists/{playlist_id}/items"
     # Check a snapshot before and after reading; never move positions from a
     # stale playlist state. New sync runs are serialized by GitHub concurrency.
@@ -212,7 +212,8 @@ def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES):
     entries = list(client.pages(path, additional_types="track,episode"))
     if client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id") != start_snapshot:
         raise SortError("Playlist changed during read; retry next scheduled run")
-    catalogs = {show_id: list(client.pages(f"/shows/{show_id}/episodes")) for show_id in shows}
+    if catalogs is None:
+        catalogs = {show_id: list(client.pages(f"/shows/{show_id}/episodes")) for show_id in shows}
     if any(not catalog for catalog in catalogs.values()):
         raise SortError("A podcast catalog is empty; no moves attempted")
     metadata = make_metadata(shows, catalogs)

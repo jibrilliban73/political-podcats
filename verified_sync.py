@@ -15,7 +15,10 @@ import sys
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from spotify_http import send_json
+from playlist_sort import SortError, desired_indices, make_metadata, order_playlist
 
 API_ROOT = "https://api.spotify.com/v1"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -36,35 +39,7 @@ class Spotify:
 
     @staticmethod
     def send(request, label):
-        for attempt in range(4):
-            try:
-                with urlopen(request, timeout=45) as response:
-                    raw = response.read()
-                    return json.loads(raw) if raw else {}
-            except HTTPError as exc:
-                try:
-                    detail = json.loads(exc.read())
-                except (ValueError, UnicodeDecodeError):
-                    detail = {}
-                error = detail.get("error") if isinstance(detail, dict) else None
-                reason = error.get("reason") if isinstance(error, dict) else None
-                if error == "invalid_grant":
-                    raise SyncError("Spotify authorization expired or was revoked. Reauthorize and update the encrypted refresh token.") from None
-                if exc.code == 429:
-                    delay_text = exc.headers.get("Retry-After", "3")
-                    delay = int(delay_text) if delay_text.isdigit() else 3
-                    if reason == "QUOTA_EXCEEDED" or delay > 60 or attempt == 3:
-                        raise SyncError("Spotify rate limit or development quota reached; retry on a later run.") from None
-                    time.sleep(max(delay, 1))
-                    continue
-                hint = " Check Premium, authorized app users, scopes, and playlist ownership." if exc.code == 403 else ""
-                raise SyncError(f"Spotify returned HTTP {exc.code} during {label}.{hint}") from None
-            except (URLError, OSError, TimeoutError):
-                # Do not blindly retry a mutation after a lost response.
-                raise SyncError(f"Network error during {label}; the next run will reread Spotify before making changes.") from None
-            except ValueError:
-                raise SyncError(f"Invalid Spotify JSON during {label}.") from None
-        raise SyncError("Spotify retries exhausted.")
+        return send_json(request, label, SyncError)
 
     def access_token(self):
         if self.token and time.time() < self.expires_at:
@@ -226,7 +201,7 @@ def audit(plan, entries):
             "excluded_remaining": sum(after[uri] for uri in plan["excluded"])}
 
 
-def reconcile(client, config, *, dry_run=False, verify_only=False):
+def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist=False):
     if set(config["shows"]) & set(config.get("excluded_shows", [])):
         raise SyncError("Included and excluded shows overlap.")
     path = f'/playlists/{config["playlist_id"]}/items'
@@ -263,6 +238,20 @@ def reconcile(client, config, *, dry_run=False, verify_only=False):
         row["present_once"] = sum(uri in plan["desired"] and actual[uri] == 1 for uri in episodes)
     if not dry_run and not result["verified"]:
         raise SyncError("Playlist verification failed: " + json.dumps(result["audit"], sort_keys=True))
+    if sort_playlist:
+        sort_catalogs = {sid: list(episodes.values()) for sid, episodes in catalogs.items()}
+        if dry_run or verify_only:
+            metadata = make_metadata(config["shows"], sort_catalogs)
+            result["ordered"] = desired_indices(after, metadata) == list(range(len(after)))
+            if verify_only and not result["ordered"]:
+                raise SyncError("Membership verified but playlist order needs repair.")
+        else:
+            result["ordered"] = order_playlist(
+                client, config["playlist_id"], config["shows"],
+                catalogs=sort_catalogs, max_moves=80,
+            )
+            if not result["ordered"]:
+                raise SyncError("Membership verified; safe sorting made progress and will continue next run.")
     return result
 
 
@@ -278,6 +267,8 @@ def emit_report(result):
         lines.append(f'| {row["show"]} | {row["catalog"]} | {row["unplayed"]} | {row["in_progress"]} | {row["finished"]} | {row["unavailable_unfinished"]} | {row["unavailable_placeholders"]} | {row["present_once"]} |')
     lines += ["", f'Added/planned: {result["add"]}; removed/planned copies: {result["remove_copies"]}.',
               "Audit: " + ", ".join(f"{key}={value}" for key, value in result["audit"].items()), ""]
+    if "ordered" in result:
+        lines += ["Order: " + ("VERIFIED: podcast A-Z, newest episode first." if result["ordered"] else "Preview: sorting needed."), ""]
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as target:
             target.write("\n".join(lines))
@@ -289,14 +280,15 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--sort", action="store_true", help="Group by podcast A-Z, then newest release; reuse the full catalog scan")
     args = parser.parse_args()
     try:
         config = json.loads(Path(args.config).read_text(encoding="utf-8"))
         client = Spotify(os.environ.get("SPOTIFY_CLIENT_ID", "").strip(),
                          os.environ.get("SPOTIFY_REFRESH_TOKEN", "").strip())
-        emit_report(reconcile(client, config, dry_run=args.dry_run, verify_only=args.verify_only))
+        emit_report(reconcile(client, config, dry_run=args.dry_run, verify_only=args.verify_only, sort_playlist=args.sort))
         return 0
-    except (SyncError, ValueError, KeyError, TypeError, OSError) as exc:
+    except (SyncError, SortError, ValueError, KeyError, TypeError, OSError) as exc:
         # Exceptions from Spotify are sanitized above; never print tokens or raw responses.
         message = f"Sync failed: {exc}"
         print(message, file=sys.stderr)
