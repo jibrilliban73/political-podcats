@@ -81,7 +81,7 @@ def make_metadata(shows, catalogs):
 
 
 def desired_indices(entries, metadata):
-    """Managed episodes first; unrelated entries retain their relative order.
+    """All podcast episodes newest first; non-episodes retain their relative order.
 
     Unique occurrence indexes allow existing duplicates or unavailable entries
     to be moved without removing, recreating, or changing any playlist content.
@@ -93,6 +93,12 @@ def desired_indices(entries, metadata):
         if uri in metadata:
             _, date = metadata[uri]
             return (0, -date, i)
+        # Episodes already in the playlist can belong to additional podcasts.
+        # Their own release date still participates in the global ordering.
+        if isinstance(uri, str) and uri.startswith("spotify:episode:"):
+            entry = entries[i]
+            item = entry.get("item") or entry.get("track") or {}
+            return (0, -date_rank(item), i)
         return (1, 0, i)
 
     return sorted(range(len(entries)), key=key)

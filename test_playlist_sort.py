@@ -67,6 +67,14 @@ class OrderingTests(unittest.TestCase):
         # Second pass must be a no-op.
         self.assertLess(len(fake.moves), 10)
 
+    def test_additional_podcast_in_playlist_is_sorted_by_its_own_date(self):
+        extra = {"item": episode("other-show", "2026-10-30")}
+        original = [entry("managed"), extra, {"track": {"uri": "spotify:track:keep"}}]
+        fake = FakeSpotify(original, {"a": [episode("managed", "2026-01-01")]})
+        self.assertTrue(sorter.order_playlist(fake, "test", {"a": "A"}))
+        self.assertEqual([display(e) for e in fake.entries], ["other-show", "managed", "spotify:track:keep"])
+        self.assertEqual(Counter(sorter.extract_uri(e) for e in fake.entries), Counter(sorter.extract_uri(e) for e in original))
+
     def test_changed_snapshot_is_reread_before_any_reorder(self):
         class Changing(FakeSpotify):
             changed = False
