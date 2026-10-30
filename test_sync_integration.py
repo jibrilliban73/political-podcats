@@ -46,7 +46,7 @@ class RateLimitTests(unittest.TestCase):
 class IntegratedTests(unittest.TestCase):
     def test_sync_and_sort_reuse_single_complete_catalog_and_preserve_other_content(self):
         config = {"name": "Test", "playlist_id": "test", "shows": {"z": "Zoo", "a": "Alpha"}}
-        catalogs = {"z": [episode("z-old", "2020"), episode("z-new", "2026")], "a": [episode("a-old", "2020"), episode("a-new", "2026"), episode("done", "2025", True)]}
+        catalogs = {"z": [episode("z-old", "2020-02-01"), episode("z-new", "2026-01-01")], "a": [episode("a-old", "2020-01-01"), episode("a-new", "2026-02-01"), episode("done", "2025", True)]}
         class Client(FakeSpotify):
             def __init__(self):
                 super().__init__([entry("z-old"), entry("a-old"), entry("done"), {"item": {"uri": "spotify:track:unrelated"}}], catalogs)
@@ -72,7 +72,7 @@ class IntegratedTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertTrue(result["ordered"])
         self.assertEqual(client.scanned, ["/shows/z/episodes", "/shows/a/episodes"])
-        self.assertEqual([display(e) for e in client.entries], ["a-new", "a-old", "z-new", "z-old", "spotify:track:unrelated"])
+        self.assertEqual([display(e) for e in client.entries], ["a-new", "z-new", "z-old", "a-old", "spotify:track:unrelated"])
         moves = len(client.moves)
         with contextlib.redirect_stdout(io.StringIO()):
             sync.reconcile(client, config, sort_playlist=True)

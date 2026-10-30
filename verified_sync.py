@@ -248,7 +248,7 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
         else:
             result["ordered"] = order_playlist(
                 client, config["playlist_id"], config["shows"],
-                catalogs=sort_catalogs, max_moves=80,
+                catalogs=sort_catalogs, max_moves=3000,
             )
             if not result["ordered"]:
                 raise SyncError("Membership verified; safe sorting made progress and will continue next run.")
@@ -268,7 +268,7 @@ def emit_report(result):
     lines += ["", f'Added/planned: {result["add"]}; removed/planned copies: {result["remove_copies"]}.',
               "Audit: " + ", ".join(f"{key}={value}" for key, value in result["audit"].items()), ""]
     if "ordered" in result:
-        lines += ["Order: " + ("VERIFIED: podcast A-Z, newest episode first." if result["ordered"] else "Preview: sorting needed."), ""]
+        lines += ["Order: " + ("VERIFIED: newest episode first across all podcasts." if result["ordered"] else "Preview: sorting needed."), ""]
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as target:
             target.write("\n".join(lines))
@@ -280,7 +280,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--verify-only", action="store_true")
-    parser.add_argument("--sort", action="store_true", help="Group by podcast A-Z, then newest release; reuse the full catalog scan")
+    parser.add_argument("--sort", action="store_true", help="Sort all podcasts by newest release; reuse the full catalog scan")
     args = parser.parse_args()
     try:
         config = json.loads(Path(args.config).read_text(encoding="utf-8"))

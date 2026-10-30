@@ -52,20 +52,32 @@ def display(entry):
 
 
 class OrderingTests(unittest.TestCase):
-    def test_alphabetical_groups_and_newest_first_keeps_unrelated_items(self):
+    def test_global_newest_first_ignores_creator_and_keeps_unrelated_items(self):
         shows = {"z": "Zoo Talk", "a": "Art Cast"}
         all_eps = {"z": [episode("z-old", "2020-01-01"), episode("z-new", "2026-01-01")],
                    "a": [episode("a-old", "2019-01-01"), episode("a-new", "2026-02-01")]}
         original = [entry(x) for x in ["z-old", "unrelated", "a-old", "z-new", "a-new", "other"]]
         fake = FakeSpotify(original, all_eps)
         self.assertTrue(sorter.order_playlist(fake, "test", shows))
-        expected = ["a-new", "a-old", "z-new", "z-old", "unrelated", "other"]
+        expected = ["a-new", "z-new", "z-old", "a-old", "unrelated", "other"]
         self.assertEqual([display(e) for e in fake.entries], expected)
         self.assertEqual(Counter(sorter.extract_uri(e) for e in fake.entries),
                          Counter(sorter.extract_uri(e) for e in original))
         self.assertTrue(sorter.order_playlist(fake, "test", shows))
         # Second pass must be a no-op.
         self.assertLess(len(fake.moves), 10)
+
+    def test_changed_snapshot_is_reread_before_any_reorder(self):
+        class Changing(FakeSpotify):
+            changed = False
+            def pages(self, path, **kwargs):
+                if path.startswith("/playlists/") and not self.changed:
+                    self.snapshot += 1
+                    self.changed = True
+                return super().pages(path, **kwargs)
+        client = Changing([entry("old"), entry("new")], {"a": [episode("old", "2020"), episode("new", "2026")]})
+        self.assertTrue(sorter.order_playlist(client, "test", {"a": "A"}))
+        self.assertEqual([display(e) for e in client.entries], ["new", "old"])
 
     def test_only_one_show_sorts_newest_first(self):
         shows = {"w": "What's The Juice?"}
@@ -98,7 +110,7 @@ class OrderingTests(unittest.TestCase):
                 break
         else:
             self.fail("Sorting did not converge")
-        self.assertEqual([display(e) for e in fake.entries[:3]], ["a0", "a1", "a10"])
+        self.assertEqual([display(e) for e in fake.entries[:3]], ["a0", "a1", "a2"])
         self.assertTrue(all(n <= 100 for _, _, n in fake.moves))
 
     def test_duplicate_uris_and_null_playlist_items_preserved(self):

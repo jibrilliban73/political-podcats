@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely sort Spotify playlist items by show A-Z, then release date newest.
+"""Safely sort Spotify playlist episodes by release date, newest first.
 
 Intended to run AFTER an existing playlist synchronization. Never replaces a
 playlist, changes listening state, removes an episode, or creates duplicates.
@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 
 API = "https://api.spotify.com/v1"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
-MAX_MOVES = 40
+MAX_MOVES = 3000
 PROFILES = {
     "general": ("863d034412554af6be0f88f51becfe89", "0Hu69WnnxAgPP59X46XMQs", None),
     "politics": ("08d9092293aa43f398d569b4aec930eb", "47qxeTou9y8CP9mlQOttIZ", None),
@@ -91,9 +91,9 @@ def desired_indices(entries, metadata):
     def key(i):
         uri = uris[i]
         if uri in metadata:
-            name, date = metadata[uri]
-            return (0, name, -date, uri, i)
-        return (1, "", 0, "", i)
+            _, date = metadata[uri]
+            return (0, -date, i)
+        return (1, 0, i)
 
     return sorted(range(len(entries)), key=key)
 
@@ -206,12 +206,16 @@ def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=
     path = f"/playlists/{playlist_id}/items"
     # Check a snapshot before and after reading; never move positions from a
     # stale playlist state. New sync runs are serialized by GitHub concurrency.
-    start_snapshot = client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id")
-    if not isinstance(start_snapshot, str) or not start_snapshot:
-        raise SortError("No Spotify playlist snapshot; no moves attempted")
-    entries = list(client.pages(path, additional_types="track,episode"))
-    if client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id") != start_snapshot:
-        raise SortError("Playlist changed during read; retry next scheduled run")
+    for read_attempt in range(3):
+        start_snapshot = client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id")
+        if not isinstance(start_snapshot, str) or not start_snapshot:
+            raise SortError("No Spotify playlist snapshot; no moves attempted")
+        entries = list(client.pages(path, additional_types="track,episode"))
+        if client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id") == start_snapshot:
+            break
+        print("Playlist changed during read; rereading before any reorder.", flush=True)
+    else:
+        raise SortError("Playlist kept changing during reads; no stale positions were reordered")
     if catalogs is None:
         catalogs = {show_id: list(client.pages(f"/shows/{show_id}/episodes")) for show_id in shows}
     if any(not catalog for catalog in catalogs.values()):
@@ -219,16 +223,19 @@ def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=
     metadata = make_metadata(shows, catalogs)
     moves, projected, done = plan_moves(entries, metadata, max_moves)
     if not moves:
-        print(f"SORT VERIFIED: {len(entries)} items already grouped alphabetically and newest-first")
+        print(f"SORT VERIFIED: {len(entries)} items already newest-first across all podcasts")
         return True
 
     snapshot = start_snapshot
-    for source, dest, count in moves:
+    print(f"Sorting {len(entries)} items newest-first; {len(moves)} safe moves planned.", flush=True)
+    for move_number, (source, dest, count) in enumerate(moves, 1):
         response = client.request("PUT", path, body={"range_start": source, "insert_before": dest,
                                                     "range_length": count, "snapshot_id": snapshot})
         snapshot = response.get("snapshot_id")
         if not snapshot:
             raise SortError("Spotify did not confirm playlist reorder snapshot")
+        if move_number % 25 == 0:
+            print(f"Sorting progress: {move_number}/{len(moves)} safe moves completed.", flush=True)
 
     # Independently reread to confirm neither content nor ordering was lost.
     after = list(client.pages(path, additional_types="track,episode"))
@@ -240,19 +247,19 @@ def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=
     if after_uris != expected:
         raise SortError("Spotify returned a different order; inspect the playlist before retrying")
     if done:
-        print(f"SORT VERIFIED: {len(after)} items grouped by podcast A-Z, newest release first ({len(moves)} moves)")
+        print(f"SORT VERIFIED: {len(after)} items in newest-release-first order across all podcasts ({len(moves)} moves)")
     else:
         print(f"SORT PROGRESS: {len(moves)} safe reorder moves completed; future scheduled runs continue")
     return done
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Group Spotify episodes by podcast and release date")
+    parser = argparse.ArgumentParser(description="Sort Spotify episodes by release date, newest first")
     parser.add_argument("--profile", required=True, choices=sorted(PROFILES))
     parser.add_argument("--max-moves", type=int, default=MAX_MOVES)
     args = parser.parse_args()
-    if not 1 <= args.max_moves <= 80:
-        parser.error("max-moves must be from 1 to 80")
+    if not 1 <= args.max_moves <= 3000:
+        parser.error("max-moves must be from 1 to 3000")
     client_id, playlist_id, show_id = PROFILES[args.profile]
     if show_id:
         shows = {show_id: "What's The Juice?"}
