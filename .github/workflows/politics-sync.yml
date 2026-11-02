@@ -41,10 +41,42 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # Cache includes timestamps only and is automatically scoped to this repository.
+      - name: Restore Spotify cooldown status
+        uses: actions/cache/restore@v4
+        with:
+          path: .spotify-run-state.json
+          key: spotify-cooldown-${{ github.run_id }}
+          restore-keys: spotify-cooldown-
+      - name: Check whether Spotify has allowed another request
+        id: cooldown
+        shell: bash
+        run: |
+          python - <<'PYCODE'
+          import json, os, time
+          from pathlib import Path
+          path = Path('.spotify-run-state.json')
+          try:
+              state = json.loads(path.read_text()) if path.exists() else {}
+              if not isinstance(state, dict):
+                  state = {}
+          except (OSError, ValueError):
+              state = {}
+          remaining = int(state.get('cooldown_until', 0)) - int(time.time())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"skip={'true' if remaining > 0 else 'false'}\n")
+          if remaining > 0:
+              print(f'Spotify cooldown: safely deferring sync for approximately {remaining} seconds.')
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+                  out.write(f'## Spotify rate-limit cooldown\n\nSync deferred for ~{remaining} seconds. No playlist changes were attempted.\n')
+          PYCODE
       - name: Test synchronization, ordering, and rate-limit safeguards
+        if: steps.cooldown.outputs.skip != 'true'
         run: python -m unittest -v
       - name: Sync, sort, and independently verify saved playlist
+        if: steps.cooldown.outputs.skip != 'true'
         env:
+          SPOTIFY_STATE_FILE: .spotify-run-state.json
           SPOTIFY_CLIENT_ID: '08d9092293aa43f398d569b4aec930eb'
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
@@ -58,3 +90,10 @@ jobs:
             args+=(--dry-run)
           fi
           python verified_sync.py "${args[@]}"
+
+      - name: Save Spotify cooldown across workflow runs
+        if: ${{ always() && steps.cooldown.outputs.skip != 'true' && hashFiles('.spotify-run-state.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .spotify-run-state.json
+          key: spotify-cooldown-${{ github.run_id }}

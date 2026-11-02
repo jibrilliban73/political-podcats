@@ -248,7 +248,7 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
         else:
             result["ordered"] = order_playlist(
                 client, config["playlist_id"], config["shows"],
-                catalogs=sort_catalogs, max_moves=3000,
+                catalogs=sort_catalogs, max_moves=20,
             )
             if not result["ordered"]:
                 raise SyncError("Membership verified; safe sorting made progress and will continue next run.")

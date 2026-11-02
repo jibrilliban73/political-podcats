@@ -1,5 +1,7 @@
 """Paced Spotify requests that respect Retry-After without repeating lost writes."""
 import json
+import os
+from pathlib import Path
 import time
 from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError, URLError
@@ -35,6 +37,19 @@ def send_json(request, label, error_type):
             if exc.code == 429:
                 wait = retry_delay(exc.headers.get("Retry-After"))
                 if attempt == 3 or wait > MAX_RETRY_WAIT:
+                    # Store only a cooldown timestamp, never tokens or listening history.
+                    state_file = os.environ.get("SPOTIFY_STATE_FILE", "")
+                    if state_file:
+                        try:
+                            state_path = Path(state_file)
+                            previous = json.loads(state_path.read_text()) if state_path.exists() else {}
+                            if not isinstance(previous, dict):
+                                previous = {}
+                            previous["cooldown_until"] = max(int(previous.get("cooldown_until", 0)),
+                                                             int(time.time()) + wait)
+                            state_path.write_text(json.dumps(previous))
+                        except (OSError, ValueError, TypeError):
+                            pass
                     raise error_type(
                         f"Spotify rate/quota limit during {label}; Retry-After={wait}s. "
                         "Stopped safely; the next scheduled run will retry."
