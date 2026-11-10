@@ -1,27 +1,34 @@
 # Politics podcast sync
 
-This repository has its own independent GitHub Actions workflow at `.github/workflows/politics-sync.yml`, scheduled every 15 minutes. It uses this repository's own encrypted `SPOTIFY_REFRESH_TOKEN` and the dedicated Spotify client ID `08d9092293aa43f398d569b4aec930eb`. It does not call another playlist repository.
+This repository independently synchronizes the [Politics Spotify playlist](https://open.spotify.com/playlist/47qxeTou9y8CP9mlQOttIZ) using the GitHub Actions workflow at [`.github/workflows/politics-sync.yml`](.github/workflows/politics-sync.yml). The active show list is stored in [`podcast_config.json`](podcast_config.json).
 
-## What the workflow checks
+## Schedule (Calgary time)
 
-Every run reads the full catalog of every configured show and every playlist page. It adds playable unplayed and in-progress episodes once, repairs managed duplicates, removes finished managed episodes, and preserves unrelated entries. Unknown playback status, incomplete pagination, expired credentials, failed additions, and failed verification make the run fail visibly.
+- **6:00 AM and 6:00 PM:** Lightweight, read-only check of the playlist and each configured show's latest episode.
+- **7:00 AM and 7:00 PM:** Live sync and newest-first sorting attempt, provided the earlier check succeeded and Spotify is not in cooldown.
+- **Manual run:** GitHub **Actions → Politics podcast sync → Run workflow**. A push to `main` affecting tracked workflow/code/config files runs offline preflight tests **only**; it does not access Spotify.
 
-A live sync rereads the saved playlist; a separate second step rescans all catalogs and audits the saved playlist without editing it. Both must pass before the workflow succeeds. Unit tests are code checks and do not establish that the live Spotify connection works.
+GitHub-hosted schedules can be delayed. The workflow uses `America/Edmonton` for the local schedule.
 
-## Authorization and running
+## What the automation does
 
-The required `SPOTIFY_REFRESH_TOKEN` must be authorized for client ID `08d9092293aa43f398d569b4aec930eb`, with `playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-read-playback-position`. A public client ID alone is insufficient. Store the refresh token only as this repository's encrypted Actions secret, never in source code or chat.
+The live sync scans all pages of each configured podcast catalog and the playlist, then:
 
-Open this repository's Actions tab and select **Politics podcast sync**. Use **Run workflow** with **dry_run** checked for a preview; uncheck it for a live sync. Use **verify_only** for a read-only full audit. Scheduled runs perform a live sync and independent audit.
+- Adds playable **unplayed** and **in-progress** episodes that are missing.
+- Removes **fully played** managed episodes and repairs managed duplicates.
+- Leaves unrelated playlist entries alone.
+- Reads the playlist again to verify membership after changes.
+- Attempts to put episodes **newest first across all podcasts**, not grouped by creator.
 
-## Email on pass or fail
+For safety and Spotify rate limits, sorting is limited to **20 reorder moves per live sync**. Membership may be verified before sorting is complete; a workflow can report sorting progress rather than a fully successful ordered state. Treat newest-first sorting as complete only when a completed live run explicitly reports `"ordered": true` alongside successful membership verification.
 
-In GitHub notification settings, enable **Actions → Email** and leave **Only notify for failed workflows** unchecked. Each repository produces its own workflow completion notification. The scheduled workflow's actor receives these notifications. Email delivery must be checked in the mailbox; a GitHub success status alone does not prove email arrival.
-
-GitHub schedules may be delayed. Premium and Spotify authorization must remain valid. Renew expired or revoked authorization when a run reports it.
+Unknown playback state, incomplete catalog scans, invalid credentials, and failed verification can stop the run. Spotify-requested cooldowns can safely defer checks and syncs without touching the playlist.
 
 ## Configured playlist and shows
 
+The following are the **7** currently configured shows. To change the list, edit `podcast_config.json` (not the README). In particular, **The Tara Palmeri Show** is included.
+
+```json
 {
   "name": "Politics podcast",
   "playlist_id": "47qxeTou9y8CP9mlQOttIZ",
@@ -34,7 +41,28 @@ GitHub schedules may be delayed. Premium and Spotify authorization must remain v
     "3tmYU34mCKNjJrpsE2uDcB": "Hasan Minhaj Doesn't Know",
     "3kgamV3lbZIGIHW2H0XUTR": "The Tara Palmeri Show"
   }
+}
+```
 
-## Local validation
+## Running a safe test
 
-Run `python -m unittest -v`. Tests cover pagination, incomplete reads, duplicate repair, preservation of unrelated entries, missing additions, and idempotent reruns.
+1. Open [Politics podcast sync in GitHub Actions](https://github.com/jibrilliban73/political-podcats/actions/workflows/politics-sync.yml).
+2. Choose **Run workflow** on `main`.
+3. Keep **`dry_run = true`** and **`verify_only = false`** to preview the episode counts, additions/removals, and sorting status **without making playlist changes**.
+4. Review the job summary/logs to verify that all 7 shows were scanned, including The Tara Palmeri Show. A green run alone does not confirm a Spotify scan if access was deferred due to cooldown.
+
+For a read-only full membership-and-ordering audit, select `verify_only = true`. It may fail if newest-first ordering is still in progress. Uncheck `dry_run` only when intentionally requesting a manual live sync.
+
+## Spotify authorization
+
+The workflow uses repository-secret `SPOTIFY_REFRESH_TOKEN` with the existing dedicated Spotify client ID `08d9092293aa43f398d569b4aec930eb`. It expects scopes `playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-read-playback-position`.
+
+**Adding a show to `podcast_config.json` does not require a new Spotify app or a new authorization** if the existing token remains valid. Never commit or share the refresh token. Spotify Premium and API authorization must remain valid; reauthorize only if a run reports invalid/revoked credentials.
+
+## GitHub notifications
+
+In GitHub notification settings, enable **Actions → Email** and leave **Only notify for failed workflows** unchecked to receive applicable workflow completion notifications. Delivery should be checked in the mailbox; a successful workflow status is not proof an email was delivered.
+
+## Local tests
+
+Run `python -m unittest -v` to test the code offline. These tests do not establish that the live Spotify connection works.
