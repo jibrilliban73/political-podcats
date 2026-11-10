@@ -26,8 +26,7 @@ Unknown playback state, incomplete catalog scans, invalid credentials, and faile
 
 ## Configured playlist and shows
 
-The following are the **7** currently configured shows. To change the list, edit `podcast_config.json` (not the README). In particular, **The Tara Palmeri Show** is included.
-
+The following are the **7** currently configured shows. To change the list, edit `podcast_config.json` (not the README). 
 ```json
 {
   "name": "Politics podcast",
