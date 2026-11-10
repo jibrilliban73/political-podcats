@@ -35,8 +35,6 @@ GitHub schedules may be delayed. Premium and Spotify authorization must remain v
     "3kgamV3lbZIGIHW2H0XUTR": "The Tara Palmeri Show"
   }
 
-```
-
 ## Local validation
 
 Run `python -m unittest -v`. Tests cover pagination, incomplete reads, duplicate repair, preservation of unrelated entries, missing additions, and idempotent reruns.
