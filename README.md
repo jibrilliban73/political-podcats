@@ -22,7 +22,6 @@ GitHub schedules may be delayed. Premium and Spotify authorization must remain v
 
 ## Configured playlist and shows
 
-```json
 {
   "name": "Politics podcast",
   "playlist_id": "47qxeTou9y8CP9mlQOttIZ",
@@ -32,9 +31,10 @@ GitHub schedules may be delayed. Premium and Spotify authorization must remain v
     "5HYmraLuzUrzy7yX5mzMLB": "I've Had It",
     "2po3b2uU76tfZ59K0Tqm3V": "Seamossgirlies",
     "3aM90v8H0DOqkAQaHsSAY2": "Critical Babe Theory",
-    "3tmYU34mCKNjJrpsE2uDcB": "Hasan Minhaj Doesn't Know"
+    "3tmYU34mCKNjJrpsE2uDcB": "Hasan Minhaj Doesn't Know",
+    "3kgamV3lbZIGIHW2H0XUTR": "The Tara Palmeri Show"
   }
-}
+
 ```
 
 ## Local validation
