@@ -2,6 +2,7 @@
 """Small read-only Spotify check for the scheduled one-hour-later sync.
 
 Reads one playlist page and one most-recent episode per subscribed show.
+If that one record is a placeholder, reads one normal-sized page as a fallback.
 Never retrieves detailed playback history, reorders, adds or removes episodes.
 Records only a success timestamp for the next scheduled sync.
 """
@@ -24,11 +25,27 @@ def light_check(client, config):
         raise SyncError('Playlist check returned an invalid total. No Spotify changes made.')
     latest = []
     for show_id, label in shows.items():
-        result = client.request('GET', f'/shows/{show_id}/episodes', params={'limit': 1})
+        path = f'/shows/{show_id}/episodes'
+        result = client.request('GET', path, params={'limit': 1})
         episodes = result.get('items')
-        if not isinstance(episodes, list) or not episodes or not isinstance(episodes[0], dict):
-            raise SyncError(f'Unable to check latest episode for {label}; no Spotify changes made.')
-        latest.append((label, episodes[0].get('release_date', 'unknown')))
+        if not isinstance(episodes, list):
+            raise SyncError(f'Invalid episode page for {label}; no Spotify changes made.')
+        episode = next((item for item in episodes if isinstance(item, dict)
+                        and isinstance(item.get('release_date'), str)
+                        and item['release_date']), None)
+        if episode is None:
+            # A null/unavailable first record should not block every podcast.
+            # The subsequent full sync still validates all required states.
+            result = client.request('GET', path, params={'limit': 50})
+            episodes = result.get('items')
+            if not isinstance(episodes, list):
+                raise SyncError(f'Invalid episode page for {label}; no Spotify changes made.')
+            episode = next((item for item in episodes if isinstance(item, dict)
+                            and isinstance(item.get('release_date'), str)
+                            and item['release_date']), None)
+        if episode is None:
+            raise SyncError(f'Unable to find a dated episode for {label} in the first {len(episodes)} records; no Spotify changes made.')
+        latest.append((label, episode['release_date']))
     return {'total': total, 'latest': latest}
 
 

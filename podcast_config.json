@@ -9,6 +9,12 @@
     "3aM90v8H0DOqkAQaHsSAY2": "Critical Babe Theory",
     "3tmYU34mCKNjJrpsE2uDcB": "Hasan Minhaj Doesn't Know",
     "3kgamV3lbZIGIHW2H0XUTR": "The Tara Palmeri Show"
+  },
+  "recent_show_policy": {
+    "4gnbg5moE7d882Ag5Yhiz2": {
+      "days": 7,
+      "full_scan_weekday": 6
+    }
   }
 }
 

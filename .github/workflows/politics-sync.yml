@@ -11,11 +11,21 @@ on:
         description: Read-only full audit of membership and ordering
         type: boolean
         default: false
+      check_only:
+        description: Run only the lightweight read-only check
+        type: boolean
+        default: false
+      full_history:
+        description: Scan the full history of every show
+        type: boolean
+        default: false
   schedule:
     # Read-only check of latest episodes; followed by a sync one hour later.
     - cron: '0 6,18 * * *'
       timezone: "America/Edmonton"
-    - cron: '0 7,19 * * *'
+    - cron: '0 7 * * *'
+      timezone: "America/Edmonton"
+    - cron: '0 19 * * *'
       timezone: "America/Edmonton"
   push:
     branches: [main]
@@ -53,11 +63,13 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE_CRON: ${{ github.event.schedule }}
+          CHECK_ONLY: ${{ inputs.check_only }}
         run: |
           case "$EVENT_NAME|$SCHEDULE_CRON" in
             'schedule|0 6,18 * * *') phase=check ;;
-            'schedule|0 7,19 * * *') phase=sync ;;
-            'workflow_dispatch|') phase=sync ;;
+            'schedule|0 7 * * *'|'schedule|0 19 * * *') phase=sync ;;
+            'workflow_dispatch|')
+              if [[ "$CHECK_ONLY" == 'true' ]]; then phase=check; else phase=sync; fi ;;
             'push|') phase=preflight ;;
             *) echo 'Unexpected schedule; refusing to access Spotify.' >&2; exit 1 ;;
           esac
@@ -121,6 +133,9 @@ jobs:
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
           VERIFY_ONLY: ${{ inputs.verify_only }}
+          FULL_HISTORY: ${{ inputs.full_history }}
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE_CRON: ${{ github.event.schedule }}
         shell: bash
         run: |
           args=(--sort)
@@ -128,6 +143,12 @@ jobs:
             args+=(--verify-only)
           elif [[ "$DRY_RUN" == 'true' ]]; then
             args+=(--dry-run)
+          fi
+          if [[ "$FULL_HISTORY" == 'true' ]]; then
+            args+=(--full-history)
+          fi
+          if [[ "$EVENT_NAME" == 'schedule' && "$SCHEDULE_CRON" == '0 7 * * *' ]]; then
+            args+=(--scheduled-morning)
           fi
           python verified_sync.py "${args[@]}"
       - name: Preserve latest cooldown and check status
