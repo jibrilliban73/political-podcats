@@ -1,5 +1,6 @@
 import contextlib
 import copy
+from datetime import date, datetime
 import io
 import unittest
 from unittest.mock import patch
@@ -131,6 +132,112 @@ class PaginationTests(unittest.TestCase):
             client.request = lambda *args, **kwargs: page
             with self.assertRaises(sync.SyncError):
                 list(client.pages("/example"))
+
+    def test_recent_boundary_reads_entire_old_page_then_stops(self):
+        client = sync.Spotify("id", "token")
+        offsets = []
+        def request(method, path, params):
+            offset = params["offset"]
+            offsets.append(offset)
+            dates = (["2026-11-11"] * 50 if offset == 0 else
+                     ["2026-11-03"] * 50 if offset == 50 else ["2026-01-01"] * 50)
+            return {"items": [{"release_date": item} for item in dates],
+                    "total": 150, "next": "yes" if offset < 100 else None}
+        client.request = request
+        boundary = sync.RecentPageBoundary(date(2026, 11, 4))
+        self.assertEqual(len(list(client.pages("/example", stop_after_page=boundary))), 100)
+        self.assertEqual(offsets, [0, 50])
+        self.assertTrue(boundary.stopped)
+
+    def test_recent_boundary_falls_back_on_ambiguous_or_unordered_dates(self):
+        for first, second in [([{"release_date": "2026-11"}], [{"release_date": "2026-01-01"}]),
+                              ([{"release_date": "2026-11-03"}, {"release_date": "2026-11-11"}],
+                               [{"release_date": "2026-01-01"}])]:
+            boundary = sync.RecentPageBoundary(date(2026, 11, 4))
+            self.assertFalse(boundary(first))
+            self.assertFalse(boundary(second))
+            self.assertTrue(boundary.must_scan_all)
+
+
+class RecentCatalogTests(unittest.TestCase):
+    class DatedPagesClient(Client):
+        def __init__(self):
+            super().__init__(entries=[{"item": episode("old_done", True)}])
+            self.pages_read = 0
+            self.groups = [
+                [episode("recent", release_date="2026-11-11")],
+                [episode("boundary", release_date="2026-11-03")],
+                [episode("old_done", True, release_date="2026-01-01")],
+            ]
+        def pages(self, path, **kwargs):
+            if path != "/shows/managed/episodes":
+                return super().pages(path, **kwargs)
+            boundary = kwargs.get("stop_after_page")
+            def iterate():
+                for index, group in enumerate(self.groups):
+                    self.pages_read += 1
+                    yield from copy.deepcopy(group)
+                    if index < len(self.groups) - 1 and boundary and boundary(group):
+                        return
+            return iterate()
+
+    def config(self):
+        return {**CONFIG, "recent_show_policy": {"managed": {"days": 7, "full_scan_weekday": 6}}}
+
+    def test_recent_run_preserves_unscanned_older_items_and_reports_scope(self):
+        client = self.DatedPagesClient()
+        result = sync.reconcile(client, self.config(), as_of=datetime(2026, 11, 11, 7))
+        self.assertEqual(client.pages_read, 2)
+        self.assertEqual(result["shows"][0]["scan_scope"], "recent_since_2026-11-04")
+        self.assertTrue(result["scanned_scope_verified"])
+        self.assertFalse(result["full_catalog_scan"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(sync.counts(client.entries)["spotify:episode:old_done"], 1)
+        self.assertEqual(sync.counts(client.entries)["spotify:episode:recent"], 1)
+        self.assertTrue(all(method != "DELETE" for method, _ in client.writes))
+
+    def test_sunday_full_scan_reconciles_older_played_items(self):
+        client = self.DatedPagesClient()
+        result = sync.reconcile(client, self.config(), as_of=datetime(2026, 11, 15, 7), scheduled_morning=True)
+        self.assertEqual(client.pages_read, 3)
+        self.assertTrue(result["full_catalog_scan"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(sync.counts(client.entries)["spotify:episode:old_done"], 0)
+
+    def test_manual_full_history_overrides_recent_policy(self):
+        client = self.DatedPagesClient()
+        result = sync.reconcile(client, self.config(), as_of=datetime(2026, 11, 11, 7), full_history=True)
+        self.assertEqual(client.pages_read, 3)
+        self.assertTrue(result["verified"])
+
+    def test_missing_date_for_unscanned_episode_cannot_claim_sorted(self):
+        client = self.DatedPagesClient()
+        with self.assertRaisesRegex(sync.SyncError, "lacks a release date"):
+            sync.reconcile(client, self.config(), as_of=datetime(2026, 11, 11, 7), sort_playlist=True)
+
+    def test_sunday_evening_uses_recent_scope(self):
+        client = self.DatedPagesClient()
+        result = sync.reconcile(client, self.config(), as_of=datetime(2026, 11, 15, 19))
+        self.assertEqual(client.pages_read, 2)
+        self.assertFalse(result["full_catalog_scan"])
+        self.assertTrue(result["scanned_scope_verified"])
+
+    def test_delayed_sunday_morning_run_still_scans_full_history(self):
+        client = self.DatedPagesClient()
+        result = sync.reconcile(client, self.config(), as_of=datetime(2026, 11, 15, 14), scheduled_morning=True)
+        self.assertEqual(client.pages_read, 3)
+        self.assertTrue(result["full_catalog_scan"])
+
+    def test_other_shows_keep_full_catalog_reconciliation(self):
+        client = self.DatedPagesClient()
+        client.catalogs["other"] = [episode("other_old", True, release_date="2025-01-01")]
+        client.entries.append({"item": episode("other_old", True, release_date="2025-01-01")})
+        config = self.config()
+        config["shows"] = {"managed": "Managed", "other": "Other"}
+        result = sync.reconcile(client, config, as_of=datetime(2026, 11, 11, 7))
+        self.assertEqual(result["shows"][1]["scan_scope"], "full")
+        self.assertIn("/shows/other/episodes", client.reads)
+        self.assertEqual(sync.counts(client.entries)["spotify:episode:other_old"], 0)
 
 
 if __name__ == "__main__":

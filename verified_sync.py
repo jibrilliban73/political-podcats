@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from datetime import date, datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -16,9 +17,10 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request
+from zoneinfo import ZoneInfo
 
 from spotify_http import send_json
-from playlist_sort import SortError, desired_indices, make_metadata, order_playlist
+from playlist_sort import SortError, date_rank, desired_indices, make_metadata, order_playlist
 
 API_ROOT = "https://api.spotify.com/v1"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -63,7 +65,7 @@ class Spotify:
                                 headers={"Authorization": "Bearer " + self.access_token(),
                                          "Content-Type": "application/json"}), f"{method} {path}")
 
-    def pages(self, path, **extra):
+    def pages(self, path, *, stop_after_page=None, **extra):
         offset = 0
         expected_total = None
         seen_pages = set()
@@ -89,6 +91,8 @@ class Spotify:
                 return
             if not items:
                 raise SyncError("Spotify returned an empty page with a next link.")
+            if stop_after_page is not None and stop_after_page(items):
+                return
         raise SyncError("Spotify pagination exceeded its safety limit.")
 
 
@@ -104,17 +108,74 @@ def counts(entries):
                    if isinstance((item := item_from_entry(entry)).get("uri"), str))
 
 
-def scan_catalogs(client, config):
+class RecentPageBoundary:
+    """Stop only after a whole page is older than the requested date.
+
+    Spotify show pages are newest first. If dates are missing, imprecise,
+    invalid, or appear out of order, fall back to reading the full catalog.
+    """
+    def __init__(self, cutoff):
+        self.cutoff = cutoff
+        self.previous = None
+        self.must_scan_all = False
+        self.stopped = False
+
+    def __call__(self, items):
+        all_old = True
+        dated = False
+        for episode in items:
+            if episode is None:
+                continue
+            if not isinstance(episode, dict):
+                self.must_scan_all = True
+                continue
+            try:
+                if episode.get("release_date_precision", "day") != "day":
+                    raise ValueError("imprecise release date")
+                released = date.fromisoformat(episode["release_date"])
+            except (KeyError, TypeError, ValueError):
+                self.must_scan_all = True
+                continue
+            if self.previous is not None and released > self.previous:
+                self.must_scan_all = True
+            self.previous = released
+            dated = True
+            if released >= self.cutoff:
+                all_old = False
+        self.stopped = not self.must_scan_all and dated and all_old
+        return self.stopped
+
+
+def scan_catalogs(client, config, *, full_history=False, scheduled_morning=False, as_of=None):
     catalogs = {}
     summaries = []
+    as_of = as_of or datetime.now(ZoneInfo("America/Edmonton"))
+    policies = config.get("recent_show_policy", {})
+    if not isinstance(policies, dict) or set(policies) - set(config["shows"]):
+        raise SyncError("Invalid recent scan configuration; playlist unchanged.")
     for show_id, show_name in config["shows"].items():
-        episodes = list(client.pages(f"/shows/{show_id}/episodes"))
+        policy = policies.get(show_id)
+        boundary = None
+        if policy is not None:
+            if not isinstance(policy, dict):
+                raise SyncError(f"Invalid recent scan policy for {show_name}; playlist unchanged.")
+            days, full_weekday = policy.get("days"), policy.get("full_scan_weekday")
+            if (type(days) is not int or days < 1 or type(full_weekday) is not int
+                    or not 0 <= full_weekday <= 6):
+                raise SyncError(f"Invalid recent scan policy for {show_name}; playlist unchanged.")
+            weekly_window = scheduled_morning and as_of.weekday() == full_weekday
+            if not full_history and not weekly_window:
+                boundary = RecentPageBoundary(as_of.date() - timedelta(days=days))
+        path = f"/shows/{show_id}/episodes"
+        episodes = list(client.pages(path, stop_after_page=boundary) if boundary else client.pages(path))
         if not episodes:
             raise SyncError(f"No episodes returned for {show_name}; refusing to claim a complete scan.")
         unique = {}
         summary = {"show": show_name, "catalog": 0, "unplayed": 0, "in_progress": 0,
                    "finished": 0, "unknown": 0, "unavailable_unfinished": 0,
-                   "unavailable_placeholders": 0}
+                   "unavailable_placeholders": 0,
+                   "scan_scope": ("recent_since_" + boundary.cutoff.isoformat()
+                                  if boundary and boundary.stopped else "full")}
         for episode in episodes:
             # Spotify may return null or unplayable placeholders in a show's pages.
             # These cannot be added, played or safely removed, so count and skip.
@@ -201,12 +262,14 @@ def audit(plan, entries):
             "excluded_remaining": sum(after[uri] for uri in plan["excluded"])}
 
 
-def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist=False):
+def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist=False,
+              full_history=False, scheduled_morning=False, as_of=None):
     if set(config["shows"]) & set(config.get("excluded_shows", [])):
         raise SyncError("Included and excluded shows overlap.")
     path = f'/playlists/{config["playlist_id"]}/items'
     before = list(client.pages(path, additional_types="track,episode"))
-    catalogs, summary = scan_catalogs(client, config)
+    catalogs, summary = scan_catalogs(client, config, full_history=full_history or verify_only,
+                                      scheduled_morning=scheduled_morning, as_of=as_of)
     excluded_ids = config.get("excluded_shows", [])
     excluded_uris = set()
     for show_id in excluded_ids:
@@ -216,7 +279,8 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
     for row, episodes in zip(summary, catalogs.values()):
         row["required"] = row["unplayed"] + row["in_progress"]
         row["already_present"] = sum(uri in plan["desired"] and plan["baseline"][uri] > 0 for uri in episodes)
-    result = {"playlist": config["name"], "shows": summary, "full_catalog_scan": True,
+    result = {"playlist": config["name"], "shows": summary,
+              "full_catalog_scan": all(row["scan_scope"] == "full" for row in summary),
               "required": len(plan["desired"]), "add": len(plan["add"]),
               "remove_copies": sum(plan["baseline"][uri] for uri in plan["remove"]),
               "duplicate_episodes_repaired": len(plan["duplicates"]),
@@ -232,13 +296,22 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
         after = before
     result["audit"] = audit(plan, after)
     result["playlist_items"] = len(after)
-    result["verified"] = not any(result["audit"].values())
+    result["scanned_scope_verified"] = not any(result["audit"].values())
+    result["verified"] = result["scanned_scope_verified"] and result["full_catalog_scan"]
     for row, episodes in zip(summary, catalogs.values()):
         actual = counts(after)
         row["present_once"] = sum(uri in plan["desired"] and actual[uri] == 1 for uri in episodes)
-    if not dry_run and not result["verified"]:
+    if not dry_run and not result["scanned_scope_verified"]:
         raise SyncError("Playlist verification failed: " + json.dumps(result["audit"], sort_keys=True))
     if sort_playlist:
+        if not result["full_catalog_scan"]:
+            known_uris = {uri for episodes in catalogs.values() for uri in episodes}
+            for entry in after:
+                item = item_from_entry(entry)
+                uri = item.get("uri")
+                if (isinstance(uri, str) and uri.startswith("spotify:episode:")
+                        and uri not in known_uris and not date_rank(item)):
+                    raise SyncError("An unscanned playlist episode lacks a release date; refusing to claim a safe order.")
         sort_catalogs = {sid: list(episodes.values()) for sid, episodes in catalogs.items()}
         if dry_run or verify_only:
             metadata = make_metadata(config["shows"], sort_catalogs)
@@ -251,24 +324,28 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
                 catalogs=sort_catalogs, max_moves=20,
             )
             if not result["ordered"]:
-                raise SyncError("Membership verified; safe sorting made progress and will continue next run.")
+                emit_report(result)
+                scope = "Membership" if result["full_catalog_scan"] else "Scanned-scope membership"
+                raise SyncError(f"{scope} verified; safe sorting made progress and will continue next run.")
     return result
 
 
 def emit_report(result):
     # Aggregate counts only: do not publish per-episode listening history.
     print(json.dumps(result, indent=2))
-    status = "VERIFIED" if result["verified"] else "PREVIEW: changes needed"
+    status = ("VERIFIED: full catalogs" if result["verified"] else
+              "VERIFIED: recent scope only" if result["scanned_scope_verified"] else
+              "PREVIEW: changes needed")
     lines = [f'## {result["playlist"]}: {status}', "",
-             f'Full catalog scan. Required unfinished episodes: {result["required"]}. Playlist items: {result["playlist_items"]}.', "",
-             "| Podcast | Catalog | Unplayed | In progress | Finished | Unavailable unfinished | Unavailable placeholders | Present once |",
-             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+             f'Scanned-scope unfinished episodes: {result["required"]}. Playlist items: {result["playlist_items"]}.', "",
+             "| Podcast | Scan scope | Catalog | Unplayed | In progress | Finished | Unavailable unfinished | Unavailable placeholders | Present once |",
+             "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for row in result["shows"]:
-        lines.append(f'| {row["show"]} | {row["catalog"]} | {row["unplayed"]} | {row["in_progress"]} | {row["finished"]} | {row["unavailable_unfinished"]} | {row["unavailable_placeholders"]} | {row["present_once"]} |')
+        lines.append(f'| {row["show"]} | {row["scan_scope"]} | {row["catalog"]} | {row["unplayed"]} | {row["in_progress"]} | {row["finished"]} | {row["unavailable_unfinished"]} | {row["unavailable_placeholders"]} | {row["present_once"]} |')
     lines += ["", f'Added/planned: {result["add"]}; removed/planned copies: {result["remove_copies"]}.',
               "Audit: " + ", ".join(f"{key}={value}" for key, value in result["audit"].items()), ""]
     if "ordered" in result:
-        lines += ["Order: " + ("VERIFIED: newest episode first across all podcasts." if result["ordered"] else "Preview: sorting needed."), ""]
+        lines += ["Order: " + ("VERIFIED: newest episode first across all podcasts." if result["ordered"] else "Sorting still needed."), ""]
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as target:
             target.write("\n".join(lines))
@@ -281,12 +358,16 @@ def main():
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--verify-only", action="store_true")
     parser.add_argument("--sort", action="store_true", help="Sort all podcasts by newest release; reuse the full catalog scan")
+    parser.add_argument("--full-history", action="store_true", help="Scan all episodes of every configured show")
+    parser.add_argument("--scheduled-morning", action="store_true", help="This run was triggered by the morning schedule")
     args = parser.parse_args()
     try:
         config = json.loads(Path(args.config).read_text(encoding="utf-8"))
         client = Spotify(os.environ.get("SPOTIFY_CLIENT_ID", "").strip(),
                          os.environ.get("SPOTIFY_REFRESH_TOKEN", "").strip())
-        emit_report(reconcile(client, config, dry_run=args.dry_run, verify_only=args.verify_only, sort_playlist=args.sort))
+        emit_report(reconcile(client, config, dry_run=args.dry_run, verify_only=args.verify_only,
+                              sort_playlist=args.sort, full_history=args.full_history,
+                              scheduled_morning=args.scheduled_morning))
         return 0
     except (SyncError, SortError, ValueError, KeyError, TypeError, OSError) as exc:
         # Exceptions from Spotify are sanitized above; never print tokens or raw responses.
