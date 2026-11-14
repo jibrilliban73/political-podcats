@@ -23,6 +23,7 @@ class Client:
         self.reads = []
         self.drop_add = False
         self.fail_catalog = False
+        self.snapshot = 1
 
     def pages(self, path, **kwargs):
         self.reads.append(path)
@@ -32,13 +33,17 @@ class Client:
             raise sync.SyncError("failed page")
         return iter(copy.deepcopy(self.catalogs[path.split("/")[2]]))
 
-    def request(self, method, path, *, body):
+    def request(self, method, path, *, body=None):
+        if method == "GET":
+            return {"snapshot_id": str(self.snapshot)}
         self.writes.append((method, body))
         if method == "DELETE":
             remove = {item["uri"] for item in body["items"]}
             self.entries = [entry for entry in self.entries if sync.item_from_entry(entry).get("uri") not in remove]
+            self.snapshot += 1
         elif not self.drop_add:
             self.entries.extend({"item": {"uri": uri}} for uri in body["uris"])
+            self.snapshot += 1
         return {}
 
 

@@ -87,6 +87,28 @@ class OrderingTests(unittest.TestCase):
         self.assertTrue(sorter.order_playlist(client, "test", {"a": "A"}))
         self.assertEqual([display(e) for e in client.entries], ["new", "old"])
 
+    def test_audited_entries_are_reused_and_then_independently_verified(self):
+        class Counting(FakeSpotify):
+            playlist_reads = 0
+            def pages(self, path, **kwargs):
+                if path == "/playlists/test/items":
+                    self.playlist_reads += 1
+                return super().pages(path, **kwargs)
+        client = Counting([entry("old"), entry("new")], {"a": [episode("old", "2020"), episode("new", "2026")]})
+        audited = copy.deepcopy(client.entries)
+        self.assertTrue(sorter.order_playlist(client, "test", {"a": "A"},
+                                             audited_entries=audited, audited_snapshot=str(client.snapshot)))
+        self.assertEqual(client.playlist_reads, 1)  # The final verification, not a second initial read.
+        self.assertEqual([display(e) for e in client.entries], ["new", "old"])
+
+    def test_stale_audited_snapshot_refuses_to_move_any_items(self):
+        client = FakeSpotify([entry("old"), entry("new")], {"a": [episode("old", "2020"), episode("new", "2026")]})
+        audited = copy.deepcopy(client.entries)
+        client.snapshot += 1
+        with self.assertRaisesRegex(sorter.SortError, "changed after membership verification"):
+            sorter.order_playlist(client, "test", {"a": "A"}, audited_entries=audited, audited_snapshot="1")
+        self.assertEqual(client.moves, [])
+
     def test_only_one_show_sorts_newest_first(self):
         shows = {"w": "What's The Juice?"}
         episodes = {"w": [episode("older", "2023"), episode("newer", "2026-10-12")]}

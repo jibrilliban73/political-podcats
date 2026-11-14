@@ -21,7 +21,7 @@ The live sync scans the playlist and each configured podcast. Routine runs read 
 - Reads the playlist again to verify membership after changes.
 - Attempts to put episodes **newest first across all podcasts**, not grouped by creator.
 
-For safety and Spotify rate limits, sorting is limited to **20 reorder moves per live sync**. A recent-only run reports `scanned_scope_verified` separately and does not claim full membership verification. Treat newest-first sorting as complete only when a completed live run explicitly reports `"ordered": true`, `"full_catalog_scan": true`, and `"verified": true`.
+For safety and Spotify rate limits, sorting is limited to **20 reorder moves per live sync**. The snapshot-checked membership audit is reused for sorting, avoiding a redundant full playlist read; the finished sort is independently reread and verified. A recent-only run reports `scanned_scope_verified` separately and does not claim full membership verification. Treat newest-first sorting as complete only when a completed live run explicitly reports `"ordered": true`, `"full_catalog_scan": true`, and `"verified": true`.
 
 Unknown playback state, incomplete catalog scans, invalid credentials, and failed verification can stop the run. Spotify-requested cooldowns can safely defer checks and syncs without touching the playlist.
 

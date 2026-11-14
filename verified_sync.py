@@ -24,6 +24,7 @@ from playlist_sort import SortError, date_rank, desired_indices, make_metadata, 
 
 API_ROOT = "https://api.spotify.com/v1"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
+SORT_MOVE_LIMIT = 20
 
 
 class SyncError(Exception):
@@ -291,7 +292,16 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
         for start in range(0, len(plan["add"]), 100):
             client.request("POST", path, body={"uris": plan["add"][start:start + 100]})
         # Independently reread every saved playlist page, even on a no-op run.
+        # Bracket the membership audit with snapshots so its entries can also
+        # be used for sorting without another 3,000-item playlist read.
+        audit_snapshot = None
+        if sort_playlist:
+            audit_snapshot = client.request("GET", f'/playlists/{config["playlist_id"]}').get("snapshot_id")
+            if not isinstance(audit_snapshot, str) or not audit_snapshot:
+                raise SyncError("No playlist snapshot for membership audit; refusing to sort.")
         after = list(client.pages(path, additional_types="track,episode"))
+        if sort_playlist and client.request("GET", f'/playlists/{config["playlist_id"]}').get("snapshot_id") != audit_snapshot:
+            raise SyncError("Playlist changed during membership audit; refusing to sort stale positions.")
     else:
         after = before
     result["audit"] = audit(plan, after)
@@ -321,7 +331,8 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
         else:
             result["ordered"] = order_playlist(
                 client, config["playlist_id"], config["shows"],
-                catalogs=sort_catalogs, max_moves=20,
+                catalogs=sort_catalogs, max_moves=SORT_MOVE_LIMIT,
+                audited_entries=after, audited_snapshot=audit_snapshot,
             )
             if not result["ordered"]:
                 emit_report(result)

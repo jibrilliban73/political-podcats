@@ -208,20 +208,31 @@ class Spotify:
         raise SortError("Spotify pagination exceeded safety limit")
 
 
-def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=None):
+def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=None,
+                   audited_entries=None, audited_snapshot=None):
     path = f"/playlists/{playlist_id}/items"
-    # Check a snapshot before and after reading; never move positions from a
-    # stale playlist state. New sync runs are serialized by GitHub concurrency.
-    for read_attempt in range(3):
+    # A reconciler may reuse its separately snapshot-checked membership read.
+    # Check again before planning so an intervening edit cannot invalidate that
+    # audit; each reorder also includes the preceding Spotify snapshot.
+    if audited_entries is not None:
+        if not isinstance(audited_snapshot, str) or not audited_snapshot:
+            raise SortError("No verified playlist snapshot; no moves attempted")
         start_snapshot = client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id")
-        if not isinstance(start_snapshot, str) or not start_snapshot:
-            raise SortError("No Spotify playlist snapshot; no moves attempted")
-        entries = list(client.pages(path, additional_types="track,episode"))
-        if client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id") == start_snapshot:
-            break
-        print("Playlist changed during read; rereading before any reorder.", flush=True)
+        if start_snapshot != audited_snapshot:
+            raise SortError("Playlist changed after membership verification; no moves attempted")
+        entries = audited_entries
     else:
-        raise SortError("Playlist kept changing during reads; no stale positions were reordered")
+        # Standalone sorting takes its own snapshot-checked playlist read.
+        for read_attempt in range(3):
+            start_snapshot = client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id")
+            if not isinstance(start_snapshot, str) or not start_snapshot:
+                raise SortError("No Spotify playlist snapshot; no moves attempted")
+            entries = list(client.pages(path, additional_types="track,episode"))
+            if client.request("GET", f"/playlists/{playlist_id}").get("snapshot_id") == start_snapshot:
+                break
+            print("Playlist changed during read; rereading before any reorder.", flush=True)
+        else:
+            raise SortError("Playlist kept changing during reads; no stale positions were reordered")
     if catalogs is None:
         catalogs = {show_id: list(client.pages(f"/shows/{show_id}/episodes")) for show_id in shows}
     if any(not catalog for catalog in catalogs.values()):

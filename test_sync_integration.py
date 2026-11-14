@@ -1,5 +1,6 @@
 import contextlib
 import copy
+from datetime import date, timedelta
 import io
 import unittest
 from unittest.mock import patch
@@ -86,3 +87,49 @@ class IntegratedTests(unittest.TestCase):
         with self.assertRaisesRegex(sync.SyncError, "order needs repair"):
             sync.reconcile(fake, config, verify_only=True, sort_playlist=True)
         self.assertEqual(fake.moves, [])
+
+    def test_change_during_membership_audit_stops_before_sorting(self):
+        class ChangedDuringAudit(FakeSpotify):
+            reads = 0
+            def pages(self, path, **kwargs):
+                if path == "/playlists/test/items":
+                    self.reads += 1
+                    if self.reads == 2:
+                        self.snapshot += 1
+                return super().pages(path, **kwargs)
+        config = {"name": "Test", "playlist_id": "test", "shows": {"a": "Alpha"}}
+        fake = ChangedDuringAudit([entry("old"), entry("new")],
+                                 {"a": [episode("old", "2020"), episode("new", "2026")]})
+        with self.assertRaisesRegex(sync.SyncError, "changed during membership audit"):
+            sync.reconcile(fake, config, sort_playlist=True)
+        self.assertEqual(fake.moves, [])
+
+    def test_change_after_membership_audit_stops_before_sorting(self):
+        class ChangedAfterAudit(FakeSpotify):
+            snapshot_reads = 0
+            def request(self, method, path, *, params=None, body=None):
+                if method == "GET" and path == "/playlists/test":
+                    self.snapshot_reads += 1
+                    if self.snapshot_reads == 3:
+                        self.snapshot += 1
+                return super().request(method, path, params=params, body=body)
+        config = {"name": "Test", "playlist_id": "test", "shows": {"a": "Alpha"}}
+        fake = ChangedAfterAudit([entry("old"), entry("new")],
+                                {"a": [episode("old", "2020"), episode("new", "2026")]})
+        with self.assertRaisesRegex(sync.SortError, "changed after membership verification"):
+            sync.reconcile(fake, config, sort_playlist=True)
+        self.assertEqual(fake.moves, [])
+
+    def test_large_sort_makes_bounded_progress_and_eventually_verifies(self):
+        config = {"name": "Test", "playlist_id": "test", "shows": {"a": "Alpha"}}
+        catalog = [episode(f"ep{i}", (date(2025, 1, 1) + timedelta(days=i)).isoformat()) for i in range(65)]
+        fake = FakeSpotify([entry(f"ep{i}") for i in range(65)], {"a": catalog})
+        with contextlib.redirect_stdout(io.StringIO()):
+            for run in range(3):
+                with self.assertRaisesRegex(sync.SyncError, "safe sorting made progress"):
+                    sync.reconcile(fake, config, sort_playlist=True)
+                self.assertEqual(len(fake.moves), 20 * (run + 1))
+            result = sync.reconcile(fake, config, sort_playlist=True)
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["ordered"])
+        self.assertEqual(len(fake.entries), 65)
