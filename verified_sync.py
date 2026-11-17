@@ -286,6 +286,7 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
               "remove_copies": sum(plan["baseline"][uri] for uri in plan["remove"]),
               "duplicate_episodes_repaired": len(plan["duplicates"]),
               "dry_run": dry_run, "verify_only": verify_only}
+    audit_read_attempts = 0
     if not dry_run and not verify_only:
         for start in range(0, len(plan["remove"]), 100):
             client.request("DELETE", path, body={"items": [{"uri": uri} for uri in plan["remove"][start:start + 100]]})

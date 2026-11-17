@@ -133,11 +133,11 @@ class IntegratedTests(unittest.TestCase):
     def test_audit_retry_never_repeats_episode_writes(self):
         from test_verified_sync import Client, episode as state_episode
         class ChangedAfterInsertion(Client):
-            reads = 0
+            audit_reads = 0
             def pages(self, path, **kwargs):
                 if path == "/playlists/test/items":
-                    self.reads += 1
-                    if self.reads == 2:
+                    self.audit_reads += 1
+                    if self.audit_reads == 2:
                         self.snapshot += 1
                 return super().pages(path, **kwargs)
         config = {"name": "Test", "playlist_id": "test", "shows": {"managed": "Managed"}}
@@ -149,7 +149,7 @@ class IntegratedTests(unittest.TestCase):
             result = sync.reconcile(fake, config, sort_playlist=True)
         self.assertTrue(result["ordered"])
         self.assertEqual(result["audit_read_attempts"], 2)
-        self.assertEqual(fake.reads, 3)
+        self.assertEqual(fake.audit_reads, 3)
         self.assertEqual([kind for kind, _ in fake.writes], ["POST"])
         self.assertEqual(fake.writes[0][1]["position"], 0)
 
