@@ -15,7 +15,7 @@ GitHub-hosted schedules can be delayed. The workflow uses `America/Edmonton` for
 
 The live sync scans the playlist and each configured podcast. Routine runs read IHIP News episodes covering at least the past seven days, plus an older boundary page; Sunday morning it attempts its full history. All other configured shows are scanned in full at their existing twice-daily times. This reduces routine requests while preserving a weekly attempt to reconcile older IHIP listening progress. It then:
 
-- Adds playable **unplayed** and **in-progress** episodes that are missing.
+- Adds playable **unplayed** and **in-progress** episodes that are missing, inserting newly added episodes **newest-first at the top** even while historical sorting remains incomplete. The insertion requires no extra Spotify API calls.
 - Removes **fully played** managed episodes and repairs managed duplicates within the scanned scope. Older IHIP episodes are reconciled during full-history runs.
 - Leaves unrelated playlist entries alone.
 - Reads the playlist again to verify membership after changes.

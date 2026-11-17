@@ -289,8 +289,20 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
     if not dry_run and not verify_only:
         for start in range(0, len(plan["remove"]), 100):
             client.request("DELETE", path, body={"items": [{"uri": uri} for uri in plan["remove"][start:start + 100]]})
-        for start in range(0, len(plan["add"]), 100):
-            client.request("POST", path, body={"uris": plan["add"][start:start + 100]})
+        # Spotify normally appends new episodes at the very bottom of the
+        # playlist, where they can remain invisible while sorting a backlog.
+        # Prepending uses the same number of POST requests, without extra
+        # reads or reorder moves. Keep each batch and the combined prefix
+        # globally newest-first, regardless of show and batch boundaries.
+        if plan["add"]:
+            by_uri = {uri: episode for episodes in catalogs.values()
+                      for uri, episode in episodes.items()}
+            oldest_first = sorted(plan["add"],
+                                  key=lambda uri: (date_rank(by_uri[uri]), uri))
+            for start in range(0, len(oldest_first), 100):
+                batch = list(reversed(oldest_first[start:start + 100]))
+                client.request("POST", path, body={"uris": batch, "position": 0})
+            print(f"Added {len(plan['add'])} unfinished episodes at the top of the playlist.")
         # Independently reread every saved playlist page, even on a no-op run.
         # Bracket the membership audit with snapshots so its entries can also
         # be used for sorting without another 3,000-item playlist read.

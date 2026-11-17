@@ -42,7 +42,11 @@ class Client:
             self.entries = [entry for entry in self.entries if sync.item_from_entry(entry).get("uri") not in remove]
             self.snapshot += 1
         elif not self.drop_add:
-            self.entries.extend({"item": {"uri": uri}} for uri in body["uris"])
+            added = [{"item": {"uri": uri}} for uri in body["uris"]]
+            if body.get("position") == 0:
+                self.entries[:0] = added
+            else:
+                self.entries.extend(added)
             self.snapshot += 1
         return {}
 
@@ -100,6 +104,32 @@ class ReconciliationTests(unittest.TestCase):
         with self.assertRaisesRegex(sync.SyncError, "verification failed"):
             sync.reconcile(client, CONFIG, verify_only=True)
         self.assertEqual(client.writes, [])
+
+    def test_new_episodes_prepend_newest_first_without_waiting_for_sort(self):
+        client = Client(
+            [{"item": episode("existing", release_date="2026-10-01")}],
+            [episode("older", release_date="2026-10-02"),
+             episode("existing", release_date="2026-10-01"),
+             episode("latest", release_date="2026-11-17"),
+             episode("middle", release_date="2026-11-15")])
+        result = sync.reconcile(client, CONFIG)
+        self.assertTrue(result["verified"])
+        self.assertEqual([sync.item_from_entry(item).get("uri") for item in client.entries],
+                         ["spotify:episode:latest", "spotify:episode:middle",
+                          "spotify:episode:older", "spotify:episode:existing"])
+        self.assertEqual(client.writes[0][1]["position"], 0)
+
+    def test_prepend_batches_keep_global_newest_first(self):
+        from datetime import timedelta
+        dated = [episode(str(i), release_date=(date(2026, 1, 1)
+                 + timedelta(days=i)).isoformat()) for i in range(205)]
+        client = Client(episodes=dated)
+        result = sync.reconcile(client, CONFIG)
+        self.assertTrue(result["verified"])
+        self.assertEqual([sync.item_from_entry(item)["uri"] for item in client.entries],
+                         ["spotify:episode:" + str(i) for i in reversed(range(205))])
+        self.assertEqual([body["position"] for method, body in client.writes
+                          if method == "POST"], [0, 0, 0])
 
     def test_large_catalog_batches_additions_and_removals(self):
         episodes = [episode(str(i)) for i in range(205)] + [episode("done" + str(i), True) for i in range(101)]

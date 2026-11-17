@@ -63,7 +63,11 @@ class IntegratedTests(unittest.TestCase):
                     self.snapshot += 1
                     return {"snapshot_id": str(self.snapshot)}
                 if method == "POST":
-                    self.entries.extend({"item": {"uri": u}} for u in body["uris"])
+                    added = [{"item": {"uri": u}} for u in body["uris"]]
+                    if body.get("position") == 0:
+                        self.entries[:0] = added
+                    else:
+                        self.entries.extend(added)
                     self.snapshot += 1
                     return {"snapshot_id": str(self.snapshot)}
                 return super().request(method, path, body=body, params=params)
