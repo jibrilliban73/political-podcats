@@ -92,7 +92,7 @@ class IntegratedTests(unittest.TestCase):
             sync.reconcile(fake, config, verify_only=True, sort_playlist=True)
         self.assertEqual(fake.moves, [])
 
-    def test_change_during_membership_audit_stops_before_sorting(self):
+    def test_change_during_membership_audit_recovers_once_then_sorts(self):
         class ChangedDuringAudit(FakeSpotify):
             reads = 0
             def pages(self, path, **kwargs):
@@ -104,9 +104,54 @@ class IntegratedTests(unittest.TestCase):
         config = {"name": "Test", "playlist_id": "test", "shows": {"a": "Alpha"}}
         fake = ChangedDuringAudit([entry("old"), entry("new")],
                                  {"a": [episode("old", "2020"), episode("new", "2026")]})
-        with self.assertRaisesRegex(sync.SyncError, "changed during membership audit"):
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = sync.reconcile(fake, config, sort_playlist=True)
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["ordered"])
+        self.assertEqual(result["audit_read_attempts"], 2)
+        self.assertEqual(fake.reads, 4)  # Baseline, two audits, final sort validation.
+        self.assertEqual(len(fake.moves), 1)
+        self.assertEqual([display(e) for e in fake.entries], ["new", "old"])
+
+    def test_repeated_snapshot_changes_stop_without_reordering(self):
+        class ContinuallyChanging(FakeSpotify):
+            reads = 0
+            def pages(self, path, **kwargs):
+                if path == "/playlists/test/items":
+                    self.reads += 1
+                    if self.reads >= 2:
+                        self.snapshot += 1
+                return super().pages(path, **kwargs)
+        config = {"name": "Test", "playlist_id": "test", "shows": {"a": "Alpha"}}
+        fake = ContinuallyChanging([entry("old"), entry("new")],
+                                   {"a": [episode("old", "2020"), episode("new", "2026")]})
+        with self.assertRaisesRegex(sync.SyncError, "kept changing during both"):
             sync.reconcile(fake, config, sort_playlist=True)
+        self.assertEqual(fake.reads, 3)  # No unlimited retry loops.
         self.assertEqual(fake.moves, [])
+
+    def test_audit_retry_never_repeats_episode_writes(self):
+        from test_verified_sync import Client, episode as state_episode
+        class ChangedAfterInsertion(Client):
+            reads = 0
+            def pages(self, path, **kwargs):
+                if path == "/playlists/test/items":
+                    self.reads += 1
+                    if self.reads == 2:
+                        self.snapshot += 1
+                return super().pages(path, **kwargs)
+        config = {"name": "Test", "playlist_id": "test", "shows": {"managed": "Managed"}}
+        fake = ChangedAfterInsertion(
+            [{"item": state_episode("old", release_date="2020-01-01")}],
+            [state_episode("old", release_date="2020-01-01"),
+             state_episode("fresh", release_date="2026-11-17")])
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = sync.reconcile(fake, config, sort_playlist=True)
+        self.assertTrue(result["ordered"])
+        self.assertEqual(result["audit_read_attempts"], 2)
+        self.assertEqual(fake.reads, 3)
+        self.assertEqual([kind for kind, _ in fake.writes], ["POST"])
+        self.assertEqual(fake.writes[0][1]["position"], 0)
 
     def test_change_after_membership_audit_stops_before_sorting(self):
         class ChangedAfterAudit(FakeSpotify):

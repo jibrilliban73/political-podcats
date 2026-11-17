@@ -304,19 +304,38 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
                 client.request("POST", path, body={"uris": batch, "position": 0})
             print(f"Added {len(plan['add'])} unfinished episodes at the top of the playlist.")
         # Independently reread every saved playlist page, even on a no-op run.
-        # Bracket the membership audit with snapshots so its entries can also
-        # be used for sorting without another 3,000-item playlist read.
+        # Snapshot-check the read so later sorting never operates on stale
+        # playlist positions. If another editor changes the playlist mid-read,
+        # retry this *read-only* audit once; do not repeat any DELETE or POST.
+        # Spotify's normal request pacing and Retry-After handling still apply.
         audit_snapshot = None
+        audit_read_attempts = 1
         if sort_playlist:
-            audit_snapshot = client.request("GET", f'/playlists/{config["playlist_id"]}').get("snapshot_id")
-            if not isinstance(audit_snapshot, str) or not audit_snapshot:
-                raise SyncError("No playlist snapshot for membership audit; refusing to sort.")
-        after = list(client.pages(path, additional_types="track,episode"))
-        if sort_playlist and client.request("GET", f'/playlists/{config["playlist_id"]}').get("snapshot_id") != audit_snapshot:
-            raise SyncError("Playlist changed during membership audit; refusing to sort stale positions.")
+            for attempt in range(2):
+                audit_read_attempts = attempt + 1
+                audit_snapshot = client.request(
+                    "GET", f'/playlists/{config["playlist_id"]}'
+                ).get("snapshot_id")
+                if not isinstance(audit_snapshot, str) or not audit_snapshot:
+                    raise SyncError("No playlist snapshot for membership audit; refusing to sort.")
+                after = list(client.pages(path, additional_types="track,episode"))
+                final_snapshot = client.request(
+                    "GET", f'/playlists/{config["playlist_id"]}'
+                ).get("snapshot_id")
+                if final_snapshot == audit_snapshot:
+                    break
+                if attempt == 0:
+                    print("Playlist changed during membership audit; retrying the read-only audit once. "
+                          "Episode writes will not be repeated.", flush=True)
+                else:
+                    raise SyncError("Playlist kept changing during both membership audit reads; "
+                                    "no stale sorting positions were used. Episode writes were not repeated.")
+        else:
+            after = list(client.pages(path, additional_types="track,episode"))
     else:
         after = before
     result["audit"] = audit(plan, after)
+    result["audit_read_attempts"] = audit_read_attempts
     result["playlist_items"] = len(after)
     result["scanned_scope_verified"] = not any(result["audit"].values())
     result["verified"] = result["scanned_scope_verified"] and result["full_catalog_scan"]
