@@ -173,12 +173,37 @@ class IntegratedTests(unittest.TestCase):
         config = {"name": "Test", "playlist_id": "test", "shows": {"a": "Alpha"}}
         catalog = [episode(f"ep{i}", (date(2025, 1, 1) + timedelta(days=i)).isoformat()) for i in range(65)]
         fake = FakeSpotify([entry(f"ep{i}") for i in range(65)], {"a": catalog})
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
             for run in range(3):
-                with self.assertRaisesRegex(sync.SyncError, "safe sorting made progress"):
-                    sync.reconcile(fake, config, sort_playlist=True)
+                result = sync.reconcile(fake, config, sort_playlist=True)
+                self.assertTrue(result["verified"])
+                self.assertTrue(result["scanned_scope_verified"])
+                self.assertFalse(result["ordered"])
+                self.assertEqual(result["sorting_status"], "in_progress")
                 self.assertEqual(len(fake.moves), 20 * (run + 1))
             result = sync.reconcile(fake, config, sort_playlist=True)
+        self.assertIn("SORT PROGRESS:", output.getvalue())
+        self.assertIn("SYNC PROGRESS:", output.getvalue())
         self.assertTrue(result["verified"])
         self.assertTrue(result["ordered"])
+        self.assertEqual(result["sorting_status"], "complete")
         self.assertEqual(len(fake.entries), 65)
+
+    def test_partial_sort_cli_exits_success_but_reports_ordered_false(self):
+        import json
+        import os
+        import sys
+        config = {"name": "Test", "playlist_id": "test", "shows": {"a": "Alpha"}}
+        catalog = [episode(f"ep{i}", (date(2025, 1, 1) + timedelta(days=i)).isoformat()) for i in range(65)]
+        fake = FakeSpotify([entry(f"ep{i}") for i in range(65)], {"a": catalog})
+        with patch.object(sync, "Spotify", return_value=fake), \
+             patch.object(sync.Path, "read_text", return_value=json.dumps(config)), \
+             patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "test-id", "SPOTIFY_REFRESH_TOKEN": "test-token"}, clear=True), \
+             patch.object(sys, "argv", ["verified_sync.py", "--sort"]), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            exit_code = sync.main()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(fake.moves), 20)
+        self.assertIn('"ordered": false', output.getvalue())
+        self.assertIn('"sorting_status": "in_progress"', output.getvalue())
+        self.assertIn("SYNC PROGRESS:", output.getvalue())

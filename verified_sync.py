@@ -367,9 +367,13 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
                 audited_entries=after, audited_snapshot=audit_snapshot,
             )
             if not result["ordered"]:
-                emit_report(result)
-                scope = "Membership" if result["full_catalog_scan"] else "Scanned-scope membership"
-                raise SyncError(f"{scope} verified; safe sorting made progress and will continue next run.")
+                # order_playlist independently checked the playlist contents
+                # and exact order after the bounded batch. More moves are
+                # needed, but this is normal progress, not an API/sync failure.
+                # Preserve ordered=False for the strict completion watcher.
+                print("SYNC PROGRESS: membership audit passed and bounded sorting "
+                      "was verified; newest-first order is still incomplete.", flush=True)
+        result["sorting_status"] = "complete" if result["ordered"] else "in_progress"
     return result
 
 
@@ -388,7 +392,11 @@ def emit_report(result):
     lines += ["", f'Added/planned: {result["add"]}; removed/planned copies: {result["remove_copies"]}.',
               "Audit: " + ", ".join(f"{key}={value}" for key, value in result["audit"].items()), ""]
     if "ordered" in result:
-        lines += ["Order: " + ("VERIFIED: newest episode first across all podcasts." if result["ordered"] else "Sorting still needed."), ""]
+        lines += ["Order: " + ("VERIFIED: newest episode first across all podcasts." if result["ordered"]
+                             else "IN PROGRESS: bounded sorting completed safely; more scheduled syncs are needed."), ""]
+        if not result["ordered"] and not result["dry_run"] and not result["verify_only"]:
+            lines += ["Workflow success means the scanned membership and performed reorder moves were verified; "
+                      "it does not mean historical sorting is complete.", ""]
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as target:
             target.write("\n".join(lines))
