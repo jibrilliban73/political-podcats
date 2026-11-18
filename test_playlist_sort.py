@@ -116,6 +116,48 @@ class OrderingTests(unittest.TestCase):
         self.assertTrue(sorter.order_playlist(fake, "test", shows))
         self.assertEqual([display(e) for e in fake.entries], ["newer", "older"])
 
+    def test_backlog_report_tracks_verified_moves_without_extra_spotify_reads(self):
+        shows = {"a": "Podcast"}
+        catalog = {"a": [episode(f"e{i:03}", f"2025-{1+i//28:02}-{1+i%28:02}") for i in range(65)]}
+        source = [entry(f"e{i:03}") for i in range(65)]
+
+        class Counting(FakeSpotify):
+            playlist_reads = 0
+            def pages(self, path, **kwargs):
+                if path == "/playlists/test/items":
+                    self.playlist_reads += 1
+                return super().pages(path, **kwargs)
+
+        fake = Counting(source, catalog)
+        report = {}
+        done = sorter.order_playlist(fake, "test", shows, max_moves=20, progress=report)
+        self.assertFalse(done)
+        self.assertEqual(fake.playlist_reads, 2)  # Initial audit and final validation.
+        self.assertEqual(report["moves_completed"], 20)
+        self.assertEqual(report["estimated_moves_before"], 64)
+        self.assertEqual(report["estimated_moves_remaining"], 44)
+        self.assertEqual(report["estimated_moves_reduced"], 20)
+        self.assertEqual(report["trend"], "shrinking")
+        self.assertEqual(len(fake.moves), 20)
+
+        for _ in range(4):
+            report = {}
+            done = sorter.order_playlist(fake, "test", shows, max_moves=20, progress=report)
+            if done:
+                break
+        self.assertTrue(done)
+        self.assertEqual(report["estimated_moves_remaining"], 0)
+        self.assertEqual(report["trend"], "complete")
+        self.assertEqual(report["moves_completed"], 4)
+        self.assertEqual(len(fake.moves), 64)
+
+        report = {}
+        done = sorter.order_playlist(fake, "test", shows, max_moves=20, progress=report)
+        self.assertTrue(done)
+        self.assertEqual(report, {"moves_completed": 0, "estimated_moves_before": 0,
+                                  "estimated_moves_remaining": 0, "estimated_moves_reduced": 0,
+                                  "trend": "complete"})
+
     def test_moves_cap_and_next_run_continues(self):
         shows = {"a": "Podcast"}
         catalog = {"a": [episode(f"e{i:03}", f"2026-01-{1+i%28:02}") for i in range(90)]}

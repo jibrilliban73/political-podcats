@@ -361,11 +361,14 @@ def reconcile(client, config, *, dry_run=False, verify_only=False, sort_playlist
             if verify_only and not result["ordered"]:
                 raise SyncError("Membership verified but playlist order needs repair.")
         else:
+            sort_progress = {}
             result["ordered"] = order_playlist(
                 client, config["playlist_id"], config["shows"],
                 catalogs=sort_catalogs, max_moves=SORT_MOVE_LIMIT,
                 audited_entries=after, audited_snapshot=audit_snapshot,
+                progress=sort_progress,
             )
+            result["sort_progress"] = sort_progress
             if not result["ordered"]:
                 # order_playlist independently checked the playlist contents
                 # and exact order after the bounded batch. More moves are
@@ -394,6 +397,15 @@ def emit_report(result):
     if "ordered" in result:
         lines += ["Order: " + ("VERIFIED: newest episode first across all podcasts." if result["ordered"]
                              else "IN PROGRESS: bounded sorting completed safely; more scheduled syncs are needed."), ""]
+        progress = result.get("sort_progress")
+        if progress is not None:
+            lines += [f'Sorting backlog: {progress["estimated_moves_before"]} estimated moves before; '
+                      f'{progress["estimated_moves_remaining"]} estimated moves remaining '
+                      f'({progress["estimated_moves_reduced"]:+d} reduction); '
+                      f'{progress["moves_completed"]} confirmed moves completed; '
+                      f'trend={progress["trend"]}.',
+                      "Estimates use in-memory planning on this run's playlist snapshot, "
+                      "not additional Spotify API requests; they may change as episodes are added or removed.", ""]
         if not result["ordered"] and not result["dry_run"] and not result["verify_only"]:
             lines += ["Workflow success means the scanned membership and performed reorder moves were verified; "
                       "it does not mean historical sorting is complete.", ""]

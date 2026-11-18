@@ -180,6 +180,9 @@ class IntegratedTests(unittest.TestCase):
                 self.assertTrue(result["scanned_scope_verified"])
                 self.assertFalse(result["ordered"])
                 self.assertEqual(result["sorting_status"], "in_progress")
+                self.assertEqual(result["sort_progress"]["moves_completed"], 20)
+                self.assertEqual(result["sort_progress"]["estimated_moves_remaining"], 44 - 20 * run)
+                self.assertEqual(result["sort_progress"]["trend"], "shrinking")
                 self.assertEqual(len(fake.moves), 20 * (run + 1))
             result = sync.reconcile(fake, config, sort_playlist=True)
         self.assertIn("SORT PROGRESS:", output.getvalue())
@@ -187,6 +190,8 @@ class IntegratedTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertTrue(result["ordered"])
         self.assertEqual(result["sorting_status"], "complete")
+        self.assertEqual(result["sort_progress"]["estimated_moves_remaining"], 0)
+        self.assertEqual(result["sort_progress"]["moves_completed"], 4)
         self.assertEqual(len(fake.entries), 65)
 
     def test_partial_sort_cli_exits_success_but_reports_ordered_false(self):
@@ -206,4 +211,7 @@ class IntegratedTests(unittest.TestCase):
         self.assertEqual(len(fake.moves), 20)
         self.assertIn('"ordered": false', output.getvalue())
         self.assertIn('"sorting_status": "in_progress"', output.getvalue())
+        self.assertIn('"sort_progress": {', output.getvalue())
+        self.assertIn('"estimated_moves_remaining": 44', output.getvalue())
+        self.assertIn("SORT BACKLOG:", output.getvalue())
         self.assertIn("SYNC PROGRESS:", output.getvalue())

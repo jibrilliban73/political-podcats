@@ -208,8 +208,20 @@ class Spotify:
         raise SortError("Spotify pagination exceeded safety limit")
 
 
+def estimated_remaining_moves(entries, metadata):
+    """Simulate the current greedy sorter in memory; make no Spotify requests.
+
+    This is a planning estimate for an unchanged snapshot, not a guaranteed
+    number of future API calls when podcasts or playlist contents change.
+    """
+    moves, _, complete = plan_moves(entries, metadata, limit=len(entries))
+    if not complete:
+        raise SortError("Unable to finish in-memory sorting estimate")
+    return len(moves)
+
+
 def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=None,
-                   audited_entries=None, audited_snapshot=None):
+                   audited_entries=None, audited_snapshot=None, progress=None):
     path = f"/playlists/{playlist_id}/items"
     # A reconciler may reuse its separately snapshot-checked membership read.
     # Check again before planning so an intervening edit cannot invalidate that
@@ -239,9 +251,18 @@ def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=
         raise SortError("A podcast catalog is empty; no moves attempted")
     metadata = make_metadata(shows, catalogs)
     moves, projected, done = plan_moves(entries, metadata, max_moves)
+    # In-memory estimates only, based on the same playlist and catalog data
+    # already obtained for this sync. No additional Spotify reads or writes.
+    estimated_before = estimated_remaining_moves(entries, metadata) if progress is not None else None
     if not moves:
-        print(f"SORT VERIFIED: {len(entries)} items already newest-first across all podcasts")
-        return True
+        if progress is not None:
+            progress.update({"moves_completed": 0, "estimated_moves_before": estimated_before,
+                             "estimated_moves_remaining": estimated_before,
+                             "estimated_moves_reduced": 0,
+                             "trend": "complete" if done else "stalled"})
+        if done:
+            print(f"SORT VERIFIED: {len(entries)} items already newest-first across all podcasts")
+        return done
 
     snapshot = start_snapshot
     print(f"Sorting {len(entries)} items newest-first; {len(moves)} safe moves planned.", flush=True)
@@ -263,6 +284,19 @@ def order_playlist(client, playlist_id, shows, *, max_moves=MAX_MOVES, catalogs=
         raise SortError("Playlist contents changed while sorting; inspect the saved playlist")
     if after_uris != expected:
         raise SortError("Spotify returned a different order; inspect the playlist before retrying")
+    if progress is not None:
+        estimated_after = estimated_remaining_moves(after, metadata)
+        reduced = estimated_before - estimated_after
+        trend = ("complete" if done else "shrinking" if reduced > 0
+                 else "stalled" if reduced == 0 else "growing")
+        progress.update({"moves_completed": len(moves),
+                         "estimated_moves_before": estimated_before,
+                         "estimated_moves_remaining": estimated_after,
+                         "estimated_moves_reduced": reduced,
+                         "trend": trend})
+        print(f"SORT BACKLOG: {estimated_before} estimated moves before; "
+              f"{estimated_after} estimated moves remaining; trend={trend}. "
+              "Estimates assume no future playlist changes.", flush=True)
     if done:
         print(f"SORT VERIFIED: {len(after)} items in newest-release-first order across all podcasts ({len(moves)} moves)")
     else:
